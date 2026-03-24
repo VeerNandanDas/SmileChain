@@ -1,24 +1,29 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Camera, Smile, Share, Trash2, LogOut } from "lucide-react";
-import { createClient } from '@supabase/supabase-js'
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import { usePrivy, useWallets } from '@privy-io/react-auth';
 import { ethers } from 'ethers';
-import { ImageGrid } from './ImageGrid';
-import { initCamera, uploadImage, compressImage, loadExistingPhotos, handleSmileBack, deletePhoto } from '../utils/camera';
-import GoFundSmiles from './GoFundSmiles';
-import { NOUNS_SVG } from '../constants/nouns';
+import { Toaster, toast } from 'sonner';
+import { motion } from 'framer-motion';
+import { Sparkles, TrendingUp, Gift } from 'lucide-react';
 
-// Initialize Supabase client
+import Navbar from './Navbar';
+import HeroCard from './HeroCard';
+import SmileCameraCard, { SmileCameraCardRef } from './SmileCameraCard';
+import UserStatsPanel from './UserStatsPanel';
+import Leaderboard from './Leaderboard';
+import MapView from './MapView';
+import { ImageGrid } from './ImageGrid';
+import GoFundSmiles from './GoFundSmiles';
+import { compressImage, uploadImage, loadExistingPhotos, handleSmileBack, deletePhoto } from '../utils/camera';
+
+// ─── Config ─────────────────────────────────────────────
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+);
 
-// Add your contract ABI and address
 const CONTRACT_ADDRESS = "0xf5526Ff322FBE97c31160A94A380093151Aa442F";
 const CONTRACT_ABI = [
   "function analyzeSmile(string memory photoUrl) external payable",
@@ -26,27 +31,17 @@ const CONTRACT_ABI = [
   "event SmileAnalysisReceived(bytes32 indexed requestId, string photoUrl, uint8 smileScore)"
 ];
 
-// Add Base network configuration at the top of the file
-const BASE_CHAIN_ID = 8453; // Mainnet Base
+const BASE_CHAIN_ID = 8453;
 const BASE_CONFIG = {
   chainId: BASE_CHAIN_ID,
   name: 'Base',
-  network: 'base',
-  rpcUrls: {
-    default: 'https://mainnet.base.org',
-    public: 'https://mainnet.base.org',
-  },
-  blockExplorers: {
-    default: { name: 'BaseScan', url: 'https://basescan.org' },
-  },
-  nativeCurrency: {
-    name: 'Ethereum',
-    symbol: 'ETH',
-    decimals: 18,
-  },
+  rpcUrls: { default: 'https://mainnet.base.org', public: 'https://mainnet.base.org' },
+  blockExplorers: { default: { name: 'BaseScan', url: 'https://basescan.org' } },
+  nativeCurrency: { name: 'Ethereum', symbol: 'ETH', decimals: 18 },
 };
 
-interface Image {
+// ─── Types ──────────────────────────────────────────────
+interface ImageItem {
   url: string;
   timestamp: string;
   isLoading: boolean;
@@ -56,462 +51,277 @@ interface Image {
   isNounish: boolean;
 }
 
+// ─── Gamification helpers ───────────────────────────────
+function computeGamification(images: ImageItem[]) {
+  const wins = images.filter(i => i.hasWon);
+  const total = images.length;
+  const rewards = (wins.length * 0.001).toFixed(3);
+
+  const days = new Set(images.map(i => new Date(i.timestamp).toDateString()));
+  let streak = 0;
+  const today = new Date();
+  for (let d = 0; d < 365; d++) {
+    const check = new Date(today);
+    check.setDate(check.getDate() - d);
+    if (days.has(check.toDateString())) streak++;
+    else break;
+  }
+
+  const xp = total * 10 + wins.length * 50;
+  const level = Math.min(10, Math.floor(xp / 100) + 1);
+  const xpInLevel = xp - (level - 1) * 100;
+
+  return { totalSmiles: total, totalRewards: rewards, streak, xp: xpInLevel, xpToNext: 100, level };
+}
+
+function computeLeaderboard(images: ImageItem[], currentUserId?: string) {
+  const userMap: Record<string, { smiles: number; wins: number }> = {};
+  images.forEach(img => {
+    const parts = img.url.split('/');
+    const uid = parts[parts.length - 2] || 'anon';
+    if (!userMap[uid]) userMap[uid] = { smiles: 0, wins: 0 };
+    userMap[uid].smiles++;
+    if (img.hasWon) userMap[uid].wins++;
+  });
+
+  return Object.entries(userMap)
+    .sort((a, b) => b[1].smiles - a[1].smiles)
+    .slice(0, 10)
+    .map(([uid, d], i) => ({
+      rank: i + 1,
+      username: uid.length > 10 ? `${uid.slice(0, 6)}…${uid.slice(-4)}` : uid,
+      smiles: d.smiles,
+      rewards: (d.wins * 0.001).toFixed(3),
+      isCurrentUser: currentUserId ? uid === currentUserId : false,
+    }));
+}
+
+// ─── How It Works Steps ─────────────────────────────────
+const HOW_IT_WORKS = [
+  { emoji: '🔗', title: 'Connect', desc: 'Link your wallet' },
+  { emoji: '📸', title: 'Smile', desc: 'Capture your best smile' },
+  { emoji: '🤖', title: 'AI Scores', desc: 'On-chain AI rates your smile 1-5' },
+  { emoji: '💰', title: 'Earn', desc: 'Score 4+ and win 0.001 USDC!' },
+];
+
+// ─── Component ──────────────────────────────────────────
 const App = () => {
   const { login, authenticated, user, logout } = usePrivy();
   const { wallets } = useWallets();
   const [contract, setContract] = useState<ethers.Contract | null>(null);
-  const [images, setImages] = useState<Image[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [uploadStatus, setUploadStatus] = useState<string | React.ReactNode>('');
-  const [processedImages] = useState(new Set<string>());
-  const [nounsFilterEnabled, setNounsFilterEnabled] = useState(false);
+  const [images, setImages] = useState<ImageItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [captureStep, setCaptureStep] = useState(-1);
+  const processedImages = useRef(new Set<string>());
+  const cameraRef = useRef<SmileCameraCardRef>(null);
 
-  useEffect(() => {
-    const savedValue = localStorage.getItem('nounsFilterEnabled') === 'true';
-    setNounsFilterEnabled(savedValue);
-  }, []);
+  const userRef = useRef(user);
+  const nounsRef = useRef(false);
+  useEffect(() => { userRef.current = user; }, [user]);
+  useEffect(() => { nounsRef.current = localStorage.getItem('nounsFilterEnabled') === 'true'; }, []);
 
+  useEffect(() => { loadExistingPhotos().then(setImages); }, []);
+
+  // ─── Contract ────────────────────────────────────────
   useEffect(() => {
-    loadExistingPhotos().then(setImages);
-    initCamera(videoRef);
-    
-    const initContract = async () => {
+    const init = async () => {
       if (!authenticated || wallets.length === 0) return;
-      
       try {
         const wallet = wallets[0];
         const provider = await wallet.getEthersProvider();
-        
-        if (!provider) {
-          throw new Error('Failed to get provider');
-        }
+        if (!provider) throw new Error('No provider');
 
-        const network = await provider.getNetwork();
-        
-        if (network.chainId !== BASE_CHAIN_ID) {
-          setUploadStatus('Switching to Base network...');
-          try {
-            await wallet.switchChain(BASE_CHAIN_ID);
-          } catch (switchError: any) {
-            if (switchError.code === 4902) {
-              try {
-                await provider.send('wallet_addEthereumChain', [{
-                  chainId: `0x${BASE_CHAIN_ID.toString(16)}`,
-                  chainName: BASE_CONFIG.name,
-                  nativeCurrency: BASE_CONFIG.nativeCurrency,
-                  rpcUrls: [BASE_CONFIG.rpcUrls.default, BASE_CONFIG.rpcUrls.public],
-                  blockExplorerUrls: [BASE_CONFIG.blockExplorers.default.url],
-                }]);
-                await wallet.switchChain(BASE_CHAIN_ID);
-              } catch (addError) {
-                console.error('Error adding Base chain:', addError);
-                throw new Error('Failed to add Base network to wallet');
-              }
-            } else {
-              throw switchError;
-            }
+        const net = await provider.getNetwork();
+        if (net.chainId !== BASE_CHAIN_ID) {
+          toast.info('🔗 Switching to Base network…');
+          try { await wallet.switchChain(BASE_CHAIN_ID); }
+          catch (e: any) {
+            if (e.code === 4902) {
+              await provider.send('wallet_addEthereumChain', [{
+                chainId: `0x${BASE_CHAIN_ID.toString(16)}`,
+                chainName: BASE_CONFIG.name,
+                nativeCurrency: BASE_CONFIG.nativeCurrency,
+                rpcUrls: [BASE_CONFIG.rpcUrls.default],
+                blockExplorerUrls: [BASE_CONFIG.blockExplorers.default.url],
+              }]);
+              await wallet.switchChain(BASE_CHAIN_ID);
+            } else throw e;
           }
         }
 
-        const updatedProvider = await wallet.getEthersProvider();
-        const currentNetwork = await updatedProvider.getNetwork();
-        if (currentNetwork.chainId !== BASE_CHAIN_ID) {
-          throw new Error('Failed to switch to Base network');
-        }
+        const up = await wallet.getEthersProvider();
+        const signer = up.getSigner();
+        const c = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+        await c.getOracleFee();
+        setContract(c);
+        toast.success('✅ Connected to Base!');
 
-        const signer = updatedProvider.getSigner();
-        const smilePleaseContract = new ethers.Contract(
-          CONTRACT_ADDRESS,
-          CONTRACT_ABI,
-          signer
-        );
-        
-        try {
-          await smilePleaseContract.getOracleFee();
-          setContract(smilePleaseContract);
-        } catch (error) {
-          console.error('Contract verification failed:', error);
-          throw new Error('Failed to connect to contract on Base');
-        }
+        c.on("SmileAnalysisReceived", async (_rid: string, photoUrl: string, smileScore: number) => {
+          const cu = userRef.current;
+          if (processedImages.current.has(photoUrl)) return;
+          processedImages.current.add(photoUrl);
 
-        // Add event listener after contract is initialized
-        if (smilePleaseContract) {
-          smilePleaseContract.on("SmileAnalysisReceived", 
-            async (requestId: string, photoUrl: string, smileScore: number) => {
-              // Check if we've already processed this image
-              if (processedImages.has(photoUrl)) {
-                console.log('Already processed this image, skipping:', photoUrl);
-                return;
-              }
-              processedImages.add(photoUrl);
-
-              const hasWon = smileScore > 3;
-              console.log('Smile analysis received:', { requestId, photoUrl, smileScore, hasWon });
-
-              if (hasWon) {
-                // Check if image already exists in Supabase
-                const { data: existingPhoto } = await supabase
-                  .from('photos')
-                  .select()
-                  .eq('image_url', photoUrl)
-                  .single();
-
-                if (!existingPhoto) {
-                  // Only insert if photo doesn't exist
-                  const isNounish = localStorage.getItem('nounsFilterEnabled') === 'true';
-                  const { error } = await supabase
-                    .from('photos')
-                    .insert({
-                      user_id: user!.id,
-                      image_url: photoUrl,
-                      timestamp: new Date().toISOString(),
-                      smile_score: smileScore,
-                      is_nounish: isNounish,
-                      smile_count: 0
-                    });
-
-                  if (error) {
-                    console.error('Error saving to Supabase:', error);
-                    setUploadStatus('Won tokens but failed to save photo');
-                    setTimeout(() => setUploadStatus(''), 3000);
-                  }
-                }
-              }
-
-              setImages(prev => prev.map(img => {
-                if (img.url === photoUrl) {
-                  return {
-                    ...img,
-                    isLoading: false,
-                    smileScore,
-                    hasWon: hasWon,
-                    isNounish: nounsFilterEnabled
-                  };
-                }
-                return img;
-              }));
-
-              // If not a winning smile, remove it from the array after showing feedback
-              if (!hasWon) {
-                setTimeout(() => {
-                  setImages(prev => prev.filter(img => img.url !== photoUrl));
-                }, 3000);
-              }
-
-              // Updated feedback messages
-              if (hasWon) {
-                setUploadStatus(`🎉 Amazing smile! Score: ${smileScore}/5 - You won 0.001 USDC 🎊`);
-              } else {
-                let message;
-                switch(smileScore) {
-                  case 1:
-                    message = `Come on, show us your teeth! Your smile score: ${smileScore}/5`;
-                    break;
-                  case 2:
-                    message = `Almost there! Give us a bigger smile! Score: ${smileScore}/5`;
-                    break;
-                  case 3:
-                    message = `So close! Just smile a bit more genuinely! Score: ${smileScore}/5`;
-                    break;
-                  default:
-                    message = `Try again with a bigger smile! Score: ${smileScore}/5`;
-                }
-                setUploadStatus(`${message} `);
-              }
-              
-              setTimeout(() => {
-                setUploadStatus('');
-                setLoading(false);
-              }, 3000);
+          const hasWon = smileScore > 3;
+          if (hasWon && cu) {
+            const { data } = await supabase.from('photos').select().eq('image_url', photoUrl).single();
+            if (!data) {
+              const { error } = await supabase.from('photos').insert({
+                user_id: cu.id, image_url: photoUrl, timestamp: new Date().toISOString(),
+                smile_score: smileScore, is_nounish: nounsRef.current, smile_count: 0,
+              });
+              if (error) toast.error('Won tokens but failed to save');
             }
-          );
-        }
-      } catch (error) {
-        console.error('Error initializing contract:', error);
-        setUploadStatus('Failed to connect to Base network');
-        setTimeout(() => setUploadStatus(''), 3000);
-      }
-    };
+          }
 
-    initContract();
+          setImages(prev => prev.map(img => img.url === photoUrl ? { ...img, isLoading: false, smileScore, hasWon, isNounish: nounsRef.current } : img));
+          if (!hasWon) setTimeout(() => setImages(prev => prev.filter(img => img.url !== photoUrl)), 4000);
 
-    return () => {
-      // Cleanup event listener
-      if (contract) {
-        contract.removeAllListeners("SmileAnalysisReceived");
-      }
+          if (hasWon) toast.success(`🎉 Score: ${smileScore}/5 — You won 0.001 USDC!`, { duration: 5000 });
+          else {
+            const m: Record<number, string> = { 1: '😐 Show those teeth!', 2: '🙂 Bigger smile!', 3: '😊 So close!' };
+            toast.info(`${m[smileScore] || 'Try again!'} Score: ${smileScore}/5`);
+          }
+          setCaptureStep(-1);
+          setTimeout(() => setLoading(false), 2000);
+        });
+      } catch (e) { console.error(e); toast.error('Failed to connect'); }
     };
+    init();
+    return () => { contract?.removeAllListeners("SmileAnalysisReceived"); };
   }, [authenticated, wallets]);
 
-  useEffect(() => {
-    if (nounsFilterEnabled && videoRef.current) {
-      const video = videoRef.current;
-      const overlay = document.createElement('div');
-      overlay.id = 'nouns-overlay';
-      overlay.innerHTML = NOUNS_SVG;
-      overlay.style.cssText = `
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        pointer-events: none;
-        z-index: 10;
-        width: 75%;
-        height: 75%;
-      `;
-
-      // Add these styles to make the SVG more visible
-      const svg = overlay.querySelector('svg');
-      if (svg) {
-        svg.style.cssText = `
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          width: 80%;
-          height: auto;
-        `;
-      }
-      
-      video.parentElement?.appendChild(overlay);
-      
-      return () => {
-        document.getElementById('nouns-overlay')?.remove();
-      };
-    }
-  }, [nounsFilterEnabled]);
-
+  // ─── Capture ─────────────────────────────────────────
   const capturePhoto = async () => {
-    setLoading(true);
-    setUploadStatus('Capturing smile...');
+    setLoading(true); setCaptureStep(0);
     try {
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
+      const canvas = cameraRef.current?.canvasRef.current;
+      const video = cameraRef.current?.videoRef.current;
       if (!canvas || !video) return;
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.translate(canvas.width, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const context = canvas.getContext('2d');
-      if (!context) return;
+      setCaptureStep(1);
+      const blob = await new Promise<Blob>((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error('Blob failed')), 'image/jpeg', 0.8));
+      const compressed = await compressImage(blob);
+      const isNounish = localStorage.getItem('nounsFilterEnabled') === 'true';
+      const result = await uploadImage(compressed, user!.id, isNounish);
 
-      context.translate(canvas.width, 0);
-      context.scale(-1, 1);
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      setUploadStatus('Processing image...');
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (blob) {
-            resolve(blob);
-          } else {
-            reject(new Error('Failed to create blob'));
-          }
-        }, 'image/jpeg', 0.8);
-      });
-      
-      const compressedBlob = await compressImage(blob);
-      setUploadStatus('Keep smiling...');
-      const uploadResult = await uploadImage(compressedBlob, user!.id, nounsFilterEnabled);
-      
-      if (!contract) {
-        throw new Error('Smart contract not initialized');
-      }
-
-      // Verify network and get oracle fee
+      if (!contract) throw new Error('Contract not initialized');
       const provider = await wallets[0].getEthersProvider();
-      const network = await provider.getNetwork();
-      if (network.chainId !== BASE_CHAIN_ID) {
-        throw new Error('Please switch to Base network');
-      }
+      if ((await provider.getNetwork()).chainId !== BASE_CHAIN_ID) throw new Error('Switch to Base');
 
-      let oracleFee;
-      try {
-        oracleFee = await contract.getOracleFee();
-      } catch (error) {
-        console.error('Error getting oracle fee:', error);
-        throw new Error('Failed to get oracle fee');
-      }
+      const fee = await contract.getOracleFee();
+      setImages(prev => [{ url: result.url, timestamp: new Date().toISOString(), isLoading: true, smileCount: 0, smileScore: undefined, hasWon: false, isNounish }, ...prev]);
 
-      // Create new image object with loading state and isNounish
-      const newImage: Image = {
-        url: uploadResult.url,
-        timestamp: new Date().toISOString(),
-        isLoading: true,
-        smileCount: 0,
-        smileScore: undefined,
-        hasWon: false,
-        isNounish: nounsFilterEnabled
-      };
-      setImages(prev => [newImage, ...prev]);
-
-      // Send transaction to analyze smile
-      const tx = await contract.analyzeSmile(uploadResult.url, {
-        value: oracleFee,
-        gasLimit: 500000
-      });
-
-      setUploadStatus('Your smile is being submitted on-chain... 😊');
+      setCaptureStep(2);
+      const tx = await contract.analyzeSmile(result.url, { value: fee, gasLimit: 500000 });
       await tx.wait(1);
-      
-      setUploadStatus('On-chain ai analysis in progress... 😊');
-    } catch (error) {
-      console.error('Error processing photo:', error);
-      setUploadStatus(error.message || 'Failed to process photo');
-      setTimeout(() => setUploadStatus(''), 3000);
-      setLoading(false);
+      setCaptureStep(3);
+    } catch (e: any) {
+      console.error(e); toast.error(e.message || 'Failed'); setCaptureStep(-1); setLoading(false);
     }
   };
 
-  const handleSmileBackLocal = async (imageUrl: string) => {
-    try {
-      await handleSmileBack(imageUrl);
-      // Update the local state after successful smile back
-      setImages(prev => prev.map(img => {
-        if (img.url === imageUrl) {
-          return {
-            ...img,
-            smileCount: img.smileCount + 1
-          };
-        }
-        return img;
-      }));
-    } catch (error) {
-      console.error('Error handling smile back:', error);
-    }
+  const onSmileBack = async (url: string) => {
+    try { await handleSmileBack(url); setImages(prev => prev.map(img => img.url === url ? { ...img, smileCount: img.smileCount + 1 } : img)); toast('😊 Smiled back!', { duration: 1500 }); }
+    catch (e) { console.error(e); }
+  };
+  const onDelete = async (url: string, uid: string) => {
+    try { await deletePhoto(url, uid); setImages(prev => prev.filter(img => img.url !== url)); toast('🗑️ Deleted', { duration: 1500 }); }
+    catch (e) { console.error(e); }
   };
 
-  const handleDeleteLocal = async (imageUrl: string, userId: string) => {
-    try {
-      await deletePhoto(imageUrl, userId);
-      // Update the local state after successful deletion
-      setImages(prev => prev.filter(img => img.url !== imageUrl));
-    } catch (error) {
-      console.error('Error deleting photo:', error);
-    }
-  };
-
-  const shimmerStyle = `
-    relative
-    overflow-hidden
-    before:absolute
-    before:inset-0
-    before:-translate-x-full
-    before:animate-[shimmer_2s_infinite]
-    before:bg-gradient-to-r
-    before:from-transparent
-    before:via-white/60
-    before:to-transparent
-  `;
-
-  const toggleNounsFilter = () => {
-    const newValue = !nounsFilterEnabled;
-    setNounsFilterEnabled(newValue);
-    localStorage.setItem('nounsFilterEnabled', String(newValue));
-  };
+  const gam = useMemo(() => computeGamification(images), [images]);
+  const lb = useMemo(() => computeLeaderboard(images, user?.id), [images, user]);
 
   return (
-    <div className="bg-yellow-100 min-h-screen">
-      <div className="container mx-auto px-4 py-8 max-w-[1200px]">
-        <div className="bg-[#FFE5E5] border-[3px] border-black rounded-lg p-8 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] mb-12 max-w-2xl mx-auto">
-          <h1 className="text-4xl font-black text-center mb-6 transform -rotate-2">
-            Hi, I'm Mr. Based Smiles 😁
-          </h1>
-          <h2 className="text-2xl font-bold text-center mb-6 transform rotate-1">
-             Smile and I will give you 0.001 
-            <img 
-              src="https://cryptologos.cc/logos/usd-coin-usdc-logo.png" 
-              alt="USDC" 
-              className="inline h-6 w-6 mb-1 mx-2 border-2 border-black rounded-full" 
-            />
-            on
-            <img 
-              src="https://avatars.githubusercontent.com/u/108554348?v=4" 
-              alt="Base" 
-              className="inline h-6 w-6 mb-1 mx-2 border-2 border-black rounded-full" 
-            />
-          </h2>
-          <p className="text-lg font-semibold text-center bg-[#90EE90] border-[3px] border-black rounded-md p-3 transform -rotate-1 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            Immutable ai agent living on Base, who loves big smiles!
-          </p>
+    <div className="min-h-screen">
+      <Toaster position="top-center" richColors />
+      <Navbar />
+
+      <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+        {/* Hero */}
+        <HeroCard totalSmiles={gam.totalSmiles} streak={gam.streak} level={gam.level}
+          xp={gam.xp} xpToNext={gam.xpToNext} totalRewards={gam.totalRewards} authenticated={authenticated} />
+
+        {/* How It Works - compact */}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.25 }}
+          className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {HOW_IT_WORKS.map((step, i) => (
+            <motion.div key={i} whileHover={{ y: -3 }}
+              className="smile-card p-3 text-center cursor-default">
+              <span className="text-2xl block mb-1">{step.emoji}</span>
+              <p className="font-bold text-xs">{step.title}</p>
+              <p className="text-[10px] text-gray-400">{step.desc}</p>
+            </motion.div>
+          ))}
+        </motion.div>
+
+        {/* ══════ Main Dashboard: Map & Leaderboard (left) + Camera (right) ══════ */}
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+          {/* Left: Map + Leaderboard (2 cols) */}
+          <div className="lg:col-span-2 space-y-5 order-2 lg:order-1">
+            <MapView />
+            <Leaderboard entries={lb} currentUserId={user?.id} />
+          </div>
+
+          {/* Right: Camera + Stats (3 cols) */}
+          <div className="lg:col-span-3 space-y-5 order-1 lg:order-2">
+            <SmileCameraCard ref={cameraRef} authenticated={authenticated} loading={loading}
+              onCapture={capturePhoto} captureStep={captureStep} onLogin={login} />
+
+            {/* Quick Stats under camera */}
+            {authenticated && (
+              <div className="grid grid-cols-3 gap-3">
+                <motion.div whileHover={{ scale: 1.03 }} className="smile-card p-3 text-center">
+                  <TrendingUp className="h-4 w-4 mx-auto mb-1 text-blue-500" />
+                  <p className="text-lg font-black">{gam.totalSmiles}</p>
+                  <p className="text-[10px] text-gray-400">Total Smiles</p>
+                </motion.div>
+                <motion.div whileHover={{ scale: 1.03 }} className="smile-card p-3 text-center">
+                  <Sparkles className="h-4 w-4 mx-auto mb-1 text-yellow-500" />
+                  <p className="text-lg font-black">Lv.{gam.level}</p>
+                  <p className="text-[10px] text-gray-400">Your Level</p>
+                </motion.div>
+                <motion.div whileHover={{ scale: 1.03 }} className="smile-card p-3 text-center">
+                  <Gift className="h-4 w-4 mx-auto mb-1 text-green-500" />
+                  <p className="text-lg font-black">{gam.totalRewards}</p>
+                  <p className="text-[10px] text-gray-400">USDC Earned</p>
+                </motion.div>
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="relative mb-6 max-w-[480px] mx-auto">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="w-full h-[360px] object-cover border-[3px] border-black rounded-lg shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] bg-black"
-          />
-          <canvas ref={canvasRef} className="hidden" />
-          
-          <Button
-            onClick={toggleNounsFilter}
-            className={`absolute top-4 right-4 bg-white hover:bg-gray-100 text-black font-bold px-4 py-2 border-[3px] border-black rounded-lg shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] ${
-              nounsFilterEnabled ? 'bg-[#90EE90]' : ''
-            }`}
-          >
-            {nounsFilterEnabled ? 'Feeling Nounish 🤓' : 'Feel Nounish?'}
-          </Button>
-        </div>
-        <div className="text-center mb-8 flex justify-center gap-4">
-          {authenticated && (
-            <div className="text-center mb-8">
-              <Button
-                onClick={capturePhoto}
-                disabled={loading}
-                className="bg-[#90EE90] hover:bg-[#7CDF7C] text-black font-bold px-6 py-3 border-[3px] border-black rounded-lg shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-              >
-                <Camera className="mr-2" />
-                Capture Smile!
-              </Button>
-            </div>
-          )}
-          {authenticated ? (
-            <div className="text-center mb-4">
-              <Button
-                onClick={logout}
-                className="bg-[#FFB6C1] hover:bg-[#FF9CAE] text-black font-bold px-4 py-2 border-[3px] border-black rounded-lg shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-              >
-                <LogOut />
-              </Button>
-            </div>
-          ) : (
-            <div className="text-center mb-4">
-              <Button
-                onClick={login}
-                className="bg-[#90EE90] hover:bg-[#7CDF7C] text-black font-bold px-6 py-3 border-[3px] border-black rounded-lg shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-              >
-                Connect Wallet to Smile
-              </Button>
-            </div>
-          )}
-        </div>
-
+        {/* Badges */}
         {authenticated && (
-          <GoFundSmiles wallet={wallets[0]} />
+          <UserStatsPanel totalSmiles={gam.totalSmiles} streak={gam.streak} level={gam.level}
+            xp={gam.xp} xpToNext={gam.xpToNext} totalRewards={gam.totalRewards} />
         )}
 
-        <ImageGrid 
-          images={images}
-          authenticated={authenticated}
-          userId={user?.id}
-          onSmileBack={handleSmileBackLocal}
-          onDelete={handleDeleteLocal}
-          shimmerStyle={shimmerStyle}
-        />
-      </div>
+        {/* Fund Smiles */}
+        {authenticated && <GoFundSmiles wallet={wallets[0]} />}
 
-      {loading && (
-        <div className="fixed top-0 left-0 w-full h-full flex items-center justify-center bg-loading-overlay z-50">
-          <Card className="p-8 bg-white">
-            <div className="animate-bounce text-4xl mb-4">📸</div>
-            <p className="font-bold">{uploadStatus}</p>
-          </Card>
+        {/* Gallery */}
+        <div>
+          <h2 className="text-2xl font-black text-center mb-6 flex items-center justify-center gap-2">
+            😊 Smile Gallery
+          </h2>
+          <ImageGrid images={images} authenticated={authenticated} userId={user?.id}
+            onSmileBack={onSmileBack} onDelete={onDelete} />
         </div>
-      )}
+      </main>
+
+      {/* Footer */}
+      <footer className="text-center py-6 text-xs text-gray-400 mt-8 border-t border-gray-100">
+        <p className="font-medium">Built with ❤️ on Base · Powered by on-chain AI</p>
+        <p className="mt-1">© {new Date().getFullYear()} SmileChain by Openputer</p>
+      </footer>
     </div>
   );
 };
+
 export default App;

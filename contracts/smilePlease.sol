@@ -16,11 +16,16 @@ contract SmilePlease {
     IERC20 public rewardToken;
     uint256 public rewardAmount;
     address public owner;
+
+    struct RequestInfo {
+        string photoUrl;
+        address sender;
+    }
+
+    mapping(bytes32 => RequestInfo) public photoRequests;
+    mapping(string => uint8) public smileScores;
     
-    mapping(bytes32 => string) public photoRequests; // requestId => photoUrl
-    mapping(string => uint8) public smileScores; // photoUrl => smileScore
-    
-    event SmileAnalysisRequested(bytes32 indexed requestId, string photoUrl);
+    event SmileAnalysisRequested(bytes32 indexed requestId, string photoUrl, address indexed sender);
     event SmileAnalysisReceived(bytes32 indexed requestId, string photoUrl, uint8 smileScore);
     
     constructor(address _aiOracleAddress, address _rewardTokenAddress, uint256 _rewardAmount) {
@@ -34,7 +39,6 @@ contract SmilePlease {
         uint256 oracleFee = aiOracle.fee();
         require(msg.value >= oracleFee, "Insufficient fee");
         
-        // Construct the prompt for smile analysis
         string memory prompt = string(
             abi.encodePacked(
                 "Photo URL: ", photoUrl, "\n",
@@ -45,27 +49,28 @@ contract SmilePlease {
         );
         
         bytes32 requestId = aiOracle.requestAIResponse{value: oracleFee}(prompt);
-        photoRequests[requestId] = photoUrl;
+        photoRequests[requestId] = RequestInfo(photoUrl, msg.sender);
         
-        emit SmileAnalysisRequested(requestId, photoUrl);
+        emit SmileAnalysisRequested(requestId, photoUrl, msg.sender);
     }
     
     function handleAIResponse(bytes32 requestId, string memory prompt, string memory response) external {
         require(msg.sender == address(aiOracle), "Only AIOracle can call this");
         
-        string memory photoUrl = photoRequests[requestId];
+        RequestInfo memory req = photoRequests[requestId];
+        string memory photoUrl = req.photoUrl;
         require(bytes(photoUrl).length > 0, "Unknown request");
         
         bytes memory responseBytes = bytes(response);
         require(responseBytes.length > 0, "Empty response");
-        uint8 smileScore = uint8(responseBytes[0]) - 48; // Convert ASCII to number
+        uint8 smileScore = uint8(responseBytes[0]) - 48;
         require(smileScore >= 1 && smileScore <= 5, "Invalid score");
         
         smileScores[photoUrl] = smileScore;
         delete photoRequests[requestId];
         
         if (smileScore > 3) {
-            require(rewardToken.transfer(tx.origin, rewardAmount), "Token transfer failed");
+            require(rewardToken.transfer(req.sender, rewardAmount), "Token transfer failed");
         }
         
         emit SmileAnalysisReceived(requestId, photoUrl, smileScore);

@@ -1,8 +1,10 @@
+"use client";
+
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Smile, Share, Trash2, DollarSign, Star } from "lucide-react";
+import { Smile, Share, Trash2, Star, Camera } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState } from "react";
+import { motion, AnimatePresence } from 'framer-motion';
 import html2canvas from 'html2canvas';
 import { NOUNS_SVG } from '../constants/nouns';
 
@@ -17,227 +19,177 @@ interface Image {
 }
 
 interface ImageGridProps {
-  images: Array<{
-    url: string;
-    timestamp: string;
-    isLoading?: boolean;
-    smileCount: number;
-    smileScore?: number;
-    hasWon?: boolean;
-    isNounish: boolean;
-  }>;
+  images: Image[];
   authenticated: boolean;
   userId?: string;
   onSmileBack: (imageUrl: string) => void;
   onDelete: (imageUrl: string, userId: string) => void;
-  shimmerStyle: string;
 }
 
-export const ImageGrid = ({ 
-  images, 
-  authenticated, 
-  userId, 
-  onSmileBack, 
-  onDelete, 
-  shimmerStyle 
-}: ImageGridProps) => {
+const StarRating = ({ score, max = 5 }: { score: number; max?: number }) => (
+  <div className="flex items-center gap-0.5">
+    {Array.from({ length: max }, (_, i) => (
+      <Star key={i} className={`h-3.5 w-3.5 ${i < score ? 'text-yellow-400 fill-yellow-400' : 'text-gray-200'}`} />
+    ))}
+  </div>
+);
+
+export const ImageGrid = ({ images, authenticated, userId, onSmileBack, onDelete }: ImageGridProps) => {
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<Image | null>(null);
 
-  const handleShare = (image: Image) => {
-    setSelectedImage(image);
-    setIsShareModalOpen(true);
+  const handleShare = (image: Image) => { setSelectedImage(image); setIsShareModalOpen(true); };
+
+  const shareOnTwitter = () => {
+    if (!selectedImage) return;
+    const text = encodeURIComponent(
+      `I scored ${selectedImage.smileScore}/5 on my smile${selectedImage.hasWon ? ' and won 0.001 USDC 🎉' : ''}! 😊\n\nTry it: smile.openputer.com\n\n#BasedSmiles #Base #Web3`
+    );
+    window.open(`https://twitter.com/intent/tweet?text=${text}`, '_blank');
   };
 
-  const shareOnTwitter = async () => {
+  const downloadScreenshot = async () => {
     if (!selectedImage) return;
-    
-    const sharePreview = document.getElementById('share-preview');
-    if (!sharePreview) return;
-
+    const el = document.getElementById('share-preview');
+    if (!el) return;
     try {
-      const canvas = await html2canvas(sharePreview, {
-        backgroundColor: null,
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
-        width: 400,
-        height: 500,
-      });
-
+      const canvas = await html2canvas(el, { backgroundColor: null, scale: 2, useCORS: true, allowTaint: true });
       const link = document.createElement('a');
       link.download = 'my-smile-score.png';
       link.href = canvas.toDataURL('image/png');
       link.click();
-      
-    } catch (error) {
-      console.error('Error generating share image:', error);
-    }
+    } catch (e) { console.error(e); }
   };
+
+  // Empty state
+  if (images.length === 0) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="flex flex-col items-center justify-center py-16"
+      >
+        <motion.div animate={{ y: [0, -10, 0] }} transition={{ duration: 3, repeat: Infinity }}>
+          <Camera className="h-16 w-16 text-gray-200 mb-4" />
+        </motion.div>
+        <h3 className="text-xl font-black text-gray-300 mb-1">No smiles yet!</h3>
+        <p className="text-gray-400 text-sm text-center max-w-xs">Be the first to capture a smile and earn USDC 📸</p>
+      </motion.div>
+    );
+  }
 
   return (
     <>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {images.map((image, index) => (
-          <Card key={index} className="p-3 border-[3px] border-black rounded-lg shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            <div className={`relative ${image.isLoading ? shimmerStyle : ''}`}>
-              <img
-                src={image.url}
-                alt="Captured smile"
-                className="w-full h-[280px] object-cover rounded-lg mb-3 border-2 border-black"
-              />
-              {(image.isNounish) && (
-                <div 
-                  className="absolute top-2 w-12 h-12 scale-75"
-                  style={{
-                    left: '20%',
-                    transform: 'translateX(-50%) scale(0.75)',
-                    transformOrigin: 'center top'
-                  }}
-                  dangerouslySetInnerHTML={{ __html: NOUNS_SVG }}
-                />
-              )}
-              <div className="absolute top-2 right-2 bg-white/90 px-2 py-1 rounded-full border-2 border-black shadow-sm">
-                <div className="flex items-center gap-1">
-                  <span className="font-bold">
-                    {image.isLoading ? '?/5' : `${image.smileScore ?? 0}/5`}
-                  </span>
-                  {(image.smileScore ?? 0) > 3 && (
-                    <Star className="h-4 w-4 text-green-600" />
-                  )}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <AnimatePresence>
+          {images.map((image, index) => (
+            <motion.div
+              key={image.url || index}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ delay: index * 0.06 }}
+              className="smile-card image-card p-3 overflow-hidden"
+            >
+              <div className={`relative overflow-hidden rounded-xl ${image.isLoading ? 'relative before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_2s_infinite] before:bg-gradient-to-r before:from-transparent before:via-white/60 before:to-transparent before:z-10' : ''}`}>
+                <img src={image.url} alt="Smile" className="w-full h-[260px] object-cover rounded-xl" />
+                {image.isNounish && (
+                  <div className="absolute top-2 w-10 h-10" style={{ left: '20%', transform: 'translateX(-50%) scale(0.7)' }}
+                    dangerouslySetInnerHTML={{ __html: NOUNS_SVG }} />
+                )}
+                <div className={`absolute top-2 right-2 bg-white/95 px-2.5 py-1 rounded-full shadow-sm ${!image.isLoading ? 'animate-scoreReveal' : ''}`}>
+                  {image.isLoading
+                    ? <span className="text-sm font-bold text-gray-400 animate-pulse">?/5</span>
+                    : <span className="text-sm font-black">{image.smileScore ?? 0}/5</span>
+                  }
                 </div>
               </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-gray-600">
-                {new Date(image.timestamp).toLocaleString()}
-              </p>
-              <div className="flex gap-2">
-                {authenticated ? (
-                  <Button 
-                    variant="outline" 
-                    onClick={() => onSmileBack(image.url)}
-                    className="bg-[#FFD700] border-2 border-black rounded shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] h-8 flex items-center gap-1 px-2"
-                  >
-                    <Smile className="h-4 w-4" />
-                    <span>{image.smileCount || 0}</span>
-                  </Button>
-                ) : (
-                  <div className="bg-[#FFD700] border-2 border-black rounded shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] h-8 flex items-center gap-1 px-2">
-                    <Smile className="h-4 w-4" />
-                    <span>{image.smileCount || 0}</span>
-                  </div>
-                )}
-                <Button 
-                  variant="outline" 
-                  size="icon" 
-                  onClick={() => handleShare(image)}
-                  className="bg-[#90EE90] border-2 border-black rounded shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] p-2 h-8 w-8"
-                >
-                  <Share className="h-4 w-4" />
-                </Button>
-                {authenticated && userId && image.url.includes(`${userId}/`) && (
-                  <Button 
-                    variant="outline" 
-                    size="icon" 
-                    onClick={() => onDelete(image.url, userId)}
-                    className="bg-[#FFB6C1] border-2 border-black rounded shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] p-2 h-8 w-8"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
-              </div>
-            </div>
-            {image.isLoading ? (
-              <div className="mt-2 text-center">Analyzing smile... ⏳</div>
-            ) : (
-              <div className="mt-2 text-center">
-                <div className="flex items-center justify-center gap-2">
-                  <span className="font-medium">
-                    Smile Score: {image.isLoading ? '?/5' : `${image.smileScore ?? 0}/5`}
-                  </span>
-                  {(image.smileScore ?? 0) > 3 && (
-                    <span className="inline-flex items-center bg-green-100 px-2 py-1 rounded-full text-sm">
-                      <DollarSign className="h-3 w-3 text-green-600 mr-1" />
-                      <span className="text-green-600 font-medium">Winner!</span>
+
+              {/* Star Rating + Winner */}
+              {!image.isLoading && (
+                <div className="flex items-center justify-between mt-2 mb-1 px-1">
+                  <StarRating score={image.smileScore ?? 0} />
+                  {image.hasWon && (
+                    <span className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded-full animate-confetti">
+                      🎉 Winner!
                     </span>
                   )}
                 </div>
-                {image.hasWon && (
-                  <p className="text-green-600 font-bold mt-1">
-                    🎉 0.001 <img src="https://cryptologos.cc/logos/usd-coin-usdc-logo.png" alt="USDC" className="inline h-4 w-4" /> awarded! 🎉
-                  </p>
-                )}
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-gray-400 font-medium">{new Date(image.timestamp).toLocaleString()}</p>
+                <div className="flex gap-1.5">
+                  <button onClick={() => onSmileBack(image.url)}
+                    className="smile-btn flex items-center gap-1 bg-yellow-50 text-yellow-700 px-2 py-1 text-xs rounded-lg border border-yellow-200">
+                    <Smile className="h-3 w-3" />{image.smileCount || 0}
+                  </button>
+                  <button onClick={() => handleShare(image)}
+                    className="smile-btn p-1.5 bg-green-50 text-green-700 rounded-lg border border-green-200">
+                    <Share className="h-3 w-3" />
+                  </button>
+                  {authenticated && userId && image.url.includes(`${userId}/`) && (
+                    <button onClick={() => onDelete(image.url, userId)}
+                      className="smile-btn p-1.5 bg-red-50 text-red-500 rounded-lg border border-red-200">
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
               </div>
-            )}
-          </Card>
-        ))}
+
+              {/* Loading state */}
+              {image.isLoading && (
+                <div className="mt-2 text-center text-xs text-gray-400 flex items-center justify-center gap-1">
+                  <motion.span animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}>🤖</motion.span>
+                  AI analyzing your smile...
+                </div>
+              )}
+
+              {/* Win reward */}
+              {!image.isLoading && image.hasWon && (
+                <p className="text-green-600 font-bold mt-1 text-center text-xs animate-confetti">
+                  🎉 0.001 <img src="https://cryptologos.cc/logos/usd-coin-usdc-logo.png" alt="USDC" className="inline h-3 w-3" /> awarded!
+                </p>
+              )}
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
 
+      {/* Share Modal */}
       <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>
-        <DialogContent className="sm:max-w-[400px] bg-white p-6 rounded-[32px]">
+        <DialogContent className="sm:max-w-[400px] bg-white p-6 rounded-3xl">
           <DialogHeader>
-            <DialogTitle className="text-center text-2xl font-black">
-              Share Your Smile! 😊
-            </DialogTitle>
+            <DialogTitle className="text-center text-xl font-black">Share Your Smile! 😊</DialogTitle>
           </DialogHeader>
           {selectedImage && (
-            <div className="space-y-4">
-              <div 
-                id="share-preview" 
-                className="bg-white p-4 rounded-[24px] border-[3px] border-black"
-              >
-                <div className="relative rounded-[20px] overflow-hidden border-[3px] border-black">
-                  <img
-                    src={selectedImage.url}
-                    alt="Share preview"
-                    className="w-full aspect-[4/3] object-cover"
-                    crossOrigin="anonymous"
-                  />
-                  <div className="absolute top-3 right-3 bg-white rounded-full px-3 py-1 border-2 border-black flex items-center gap-1">
-                    <span className="font-black text-lg">5/5</span>
-                    <Star className="h-5 w-5 text-yellow-400 fill-yellow-400" />
+            <div className="space-y-3">
+              <div id="share-preview" className="bg-white p-3 rounded-2xl border border-gray-200">
+                <div className="relative rounded-xl overflow-hidden">
+                  <img src={selectedImage.url} alt="Share" className="w-full aspect-[4/3] object-cover" crossOrigin="anonymous" />
+                  <div className="absolute top-2 right-2 bg-white rounded-full px-2.5 py-1 shadow-sm flex items-center gap-1">
+                    <span className="font-black">{selectedImage.smileScore ?? 0}/5</span>
+                    <Star className="h-4 w-4 text-yellow-400 fill-yellow-400" />
                   </div>
                 </div>
-
                 {selectedImage.hasWon && (
-                  <div className="mt-3 bg-[#E7FFE7] rounded-[16px] p-3 border-2 border-black">
-                    <div className="flex items-center justify-center gap-2">
-                      <span className="text-[#00A308] text-xl font-black">$</span>
-                      <span className="text-[#00A308] text-xl font-black">Won 0.001 USDC!</span>
-                      <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none">
-                        <circle cx="12" cy="12" r="12" fill="#2775CA"/>
-                        <path d="M12 4.5c-4.14 0-7.5 3.36-7.5 7.5 0 4.14 3.36 7.5 7.5 7.5 4.14 0 7.5-3.36 7.5-7.5 0-4.14-3.36-7.5-7.5-7.5zm0 13.5c-3.315 0-6-2.685-6-6s2.685-6 6-6 6 2.685 6 6-2.685 6-6 6z" fill="white"/>
-                        <path d="M13.5 14.25c0-.825-.675-1.5-1.5-1.5v-1.5c.825 0 1.5-.675 1.5-1.5h1.5c0 .825.675 1.5 1.5 1.5v1.5c-.825 0-1.5.675-1.5 1.5h-1.5z" fill="white"/>
-                      </svg>
-                    </div>
+                  <div className="mt-2 bg-green-50 rounded-xl p-2.5 text-center">
+                    <span className="text-green-600 font-black text-sm">🎉 Won 0.001 USDC!</span>
                   </div>
                 )}
               </div>
-
-              <Button
-                onClick={shareOnTwitter}
-                className="w-full bg-[#2B9FE9] hover:bg-[#2B9FE9]/90 text-white font-bold py-4 px-4 rounded-[16px] border-2 border-black"
-              >
-                <div className="flex items-center justify-center gap-2">
-                  <svg 
-                    xmlns="http://www.w3.org/2000/svg" 
-                    width="20" 
-                    height="20" 
-                    viewBox="0 0 24 24" 
-                    fill="none" 
-                    stroke="currentColor" 
-                    strokeWidth="2" 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round"
-                  >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
-                  </svg>
-                  Save Screenshot
-                </div>
-              </Button>
+              <button onClick={shareOnTwitter}
+                className="w-full py-3 rounded-xl font-bold bg-black text-white hover:bg-gray-800 transition-colors flex items-center justify-center gap-2 text-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+                Share on X
+              </button>
+              <button onClick={downloadScreenshot}
+                className="w-full py-3 rounded-xl font-bold bg-blue-500 text-white hover:bg-blue-600 transition-colors flex items-center justify-center gap-2 text-sm">
+                📥 Save Screenshot
+              </button>
             </div>
           )}
         </DialogContent>
